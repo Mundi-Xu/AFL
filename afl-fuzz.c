@@ -5437,7 +5437,7 @@ static u8 fuzz_one(char** argv) {
   doing_det = 1;
 
   /*********************************************
-   * SIMPLE BITFLIP (+dictionary construction) *
+   * SIMPLE BITFLIP (+dictionary construction)简单的字节翻转 *
    *********************************************/
 
 #define FLIP_BIT(_ar, _b) do { \
@@ -5502,7 +5502,8 @@ static u8 fuzz_one(char** argv) {
       if (stage_cur == stage_max - 1 && cksum == prev_cksum) {
 
         /* If at end of file and we are still collecting a string, grab the
-           final character and force output. */
+           final character and force output.
+           如果在文件末尾，我们仍然在收集一个字符串，则获取最终字符并强制输出。 */
 
         if (a_len < MAX_AUTO_EXTRA) a_collect[a_len] = out_buf[stage_cur >> 3];
         a_len++;
@@ -5513,7 +5514,8 @@ static u8 fuzz_one(char** argv) {
       } else if (cksum != prev_cksum) {
 
         /* Otherwise, if the checksum has changed, see if we have something
-           worthwhile queued up, and collect that if the answer is yes. */
+           worthwhile queued up, and collect that if the answer is yes.
+           否则，如果校验和已经更改，查看是否有值得排队的内容，如果答案是yes，则收集这些内容。 */
 
         if (a_len >= MIN_AUTO_EXTRA && a_len <= MAX_AUTO_EXTRA)
           maybe_add_auto(a_collect, a_len);
@@ -5524,7 +5526,8 @@ static u8 fuzz_one(char** argv) {
       }
 
       /* Continue collecting string, but only if the bit flip actually made
-         any difference - we don't want no-op tokens. */
+         any difference - we don't want no-op tokens.
+         继续收集字符串，但只有当位翻转确实产生了任何影响时——我们不想要无操作令牌 */
 
       if (cksum != queue_cur->exec_cksum) {
 
@@ -5614,7 +5617,8 @@ static u8 fuzz_one(char** argv) {
 #define EFF_SPAN_ALEN(_p, _l) (EFF_APOS((_p) + (_l) - 1) - EFF_APOS(_p) + 1)
 
   /* Initialize effector map for the next step (see comments below). Always
-     flag first and last byte as doing something. */
+     flag first and last byte as doing something.为下一步初始化效应器映射(参见下面的注释)。
+     始终将第一个字节和最后一个字节标记为正在执行的操作。 */
 
   eff_map    = ck_alloc(EFF_ALEN(len));
   eff_map[0] = 1;
@@ -5643,14 +5647,16 @@ static u8 fuzz_one(char** argv) {
     /* We also use this stage to pull off a simple trick: we identify
        bytes that seem to have no effect on the current execution path
        even when fully flipped - and we skip them during more expensive
-       deterministic stages, such as arithmetics or known ints. */
+       deterministic stages, such as arithmetics or known ints.
+       我们还使用这个阶段来完成一个简单的技巧:我们识别那些即使完全翻转也似乎对当前执行路径没有影响的字节
+       ——并且我们在更昂贵的确定性阶段跳过它们，比如算术或已知的int。 */
 
     if (!eff_map[EFF_APOS(stage_cur)]) {
 
       u32 cksum;
 
       /* If in dumb mode or if the file is very short, just flag everything
-         without wasting time on checksums. */
+         without wasting time on checksums. 如果在哑模式下或者文件非常短，就标记所有内容，而不需要在校验和上浪费时间*/
 
       if (!dumb_mode && len >= EFF_MIN_LEN)
         cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
@@ -5670,7 +5676,9 @@ static u8 fuzz_one(char** argv) {
 
   /* If the effector map is more than EFF_MAX_PERC dense, just flag the
      whole thing as worth fuzzing, since we wouldn't be saving much time
-     anyway. */
+     anyway. 
+     即默认情况下，如果文件小于128 bytes，那么所有字符都是“有效”的；
+     同样地，如果AFL发现一个文件有超过90%的bytes都是“有效”的，那么也不差那10%了，大笔一挥，干脆把所有字符都划归为“有效”*/
 
   if (eff_cnt != EFF_ALEN(len) &&
       eff_cnt * 100 / EFF_ALEN(len) > EFF_MAX_PERC) {
@@ -5742,7 +5750,7 @@ static u8 fuzz_one(char** argv) {
 
   for (i = 0; i < len - 3; i++) {
 
-    /* Let's consult the effector map... */
+    /* Let's consult the effector map... 让我们看看效应器图…*/
     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)] &&
         !eff_map[EFF_APOS(i + 2)] && !eff_map[EFF_APOS(i + 3)]) {
       stage_max--;
@@ -6055,7 +6063,8 @@ skip_arith:
 
     for (j = 0; j < sizeof(interesting_8); j++) {
 
-      /* Skip if the value could be a product of bitflips or arithmetics. */
+      /* Skip if the value could be a product of bitflips or arithmetics. 
+      如果该值可以是位翻转或算术运算的乘积，则跳过。*/
 
       if (could_be_bitflip(orig ^ (u8)interesting_8[j]) ||
           could_be_arith(orig, (u8)interesting_8[j], 1)) {
@@ -6400,7 +6409,8 @@ havoc_stage:
   stage_cur_byte = -1;
 
   /* The havoc stage mutation code is also invoked when splicing files; if the
-     splice_cycle variable is set, generate different descriptions and such. */
+     splice_cycle variable is set, generate different descriptions and such.
+     在拼接文件时，还调用了破坏阶段的突变代码;如果设置了splice_cycle变量，则生成不同的描述等等。 */
 
   if (!splice_cycle) {
 
@@ -6431,7 +6441,8 @@ havoc_stage:
   havoc_queued = queued_paths;
 
   /* We essentially just do several thousand runs (depending on perf_score)
-     where we take the input file and make random stacked tweaks. */
+     where we take the input file and make random stacked tweaks.
+     实际上，我们只需要执行几千次运行(取决于perf_score)，其中我们获取输入文件并随机调整堆栈。 */
 
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
 
@@ -6858,8 +6869,13 @@ havoc_stage:
   /* This is a last-resort strategy triggered by a full round with no findings.
      It takes the current input file, randomly selects another input, and
      splices them together at some offset, then relies on the havoc
-     code to mutate that blob. */
-
+     code to mutate that blob. 如果上面一段没有任何结果，这是最后手段。
+     它接受当前输入文件，随机选择另一个输入，并以某个偏移量将它们拼接在一起，然后依赖破坏代码对该blob进行突变。
+     */
+   /*
+   历经了如此多的考验，文件的变异也进入到了最后的阶段：splice。如其意思所说，
+   splice是将两个seed文件拼接得到新的文件，并对这个新文件继续执行havoc变异。
+   */
 retry_splicing:
 
   if (use_splicing && splice_cycle++ < SPLICE_CYCLES &&
@@ -6912,7 +6928,8 @@ retry_splicing:
 
     /* Find a suitable splicing location, somewhere between the first and
        the last differing byte. Bail out if the difference is just a single
-       byte or so. */
+       byte or so. 
+       在第一个字节和最后一个不同的字节之间找到合适的拼接位置。如果差异仅为一个字节左右，则退出。*/
 
     locate_diffs(in_buf, new_buf, MIN(len, target->len), &f_diff, &l_diff);
 
@@ -6921,7 +6938,8 @@ retry_splicing:
       goto retry_splicing;
     }
 
-    /* Split somewhere between the first and last differing byte. */
+    /* Split somewhere between the first and last differing byte. 
+    在第一个字节和最后一个不同的字节之间进行分割。*/
 
     split_at = f_diff + UR(l_diff - f_diff);
 
@@ -7985,6 +8003,9 @@ EXP_ST void setup_signal_handlers(void) {
   /* Various ways of saying "stop". */
 
   sa.sa_handler = handle_stop_sig;
+  //依次为sighup-挂起
+  //sigint-终止
+  //sigerm-尽可能终止
   sigaction(SIGHUP, &sa, NULL);
   sigaction(SIGINT, &sa, NULL);
   sigaction(SIGTERM, &sa, NULL);
@@ -8121,7 +8142,7 @@ static void save_cmdline(u32 argc, char** argv) {
 
 int main(int argc, char** argv) {
 
-  s32 opt;
+  s32 opt; //有符号32位整型
   u64 prev_queued = 0;
   u32 sync_interval_cnt = 0, seek_to;
   u8  *extras_dir = 0;
@@ -8133,14 +8154,22 @@ int main(int argc, char** argv) {
   struct timezone tz;
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
-
+  //判断文件是否存在该路径下            	F_OK 值为0，判断文件是否存在
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
-
+  //在C语言中可以使用函数gettimeofday()函数来得到精确时间。它的精度可以达到微妙，是C标准库的函数。
+  //timeval 和 timezone结构体
   gettimeofday(&tv, &tz);
+  //初始化种子
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
+  //int getopt(int argc,char * const argv[ ],const char * optstring);
+  //前两个参数大家不会陌生，没错，就是老大main函数的两个参数！老大传进来的参数自然要有人接着！
+  //第三个参数是个字符串，看名字，叫他选项字符串
+  //冒号表示参数，一个冒号就表示这个选项后面必须带有参数
+  //两个冒号的就表示这个选项的参数是可选的
 
+  while ((opt = getopt(argc, argv, "+i:o:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
+  //输入参数列表选项
     switch (opt) {
 
       case 'i': /* input dir */
@@ -8330,8 +8359,11 @@ int main(int argc, char** argv) {
 
     }
 
+  //显示使用提示函数
   if (optind == argc || !in_dir || !out_dir) usage(argv[0]);
 
+  //设置信号句柄-检查asan选项
+  //Address Sanitizer（ASan）是一个快速的内存错误检测工具
   setup_signal_handlers();
   check_asan_opts();
 
@@ -8381,6 +8413,8 @@ int main(int argc, char** argv) {
   bind_to_free_cpu();
 #endif /* HAVE_AFFINITY */
 
+//确保核心转储不会进入程序
+//检查CPU
   check_crash_handling();
   check_cpu_governor();
 
@@ -8388,6 +8422,7 @@ int main(int argc, char** argv) {
   setup_shm();
   init_count_class16();
 
+//设置输出目录和文件
   setup_dirs_fds();
   read_testcases();
   load_auto();
@@ -8413,8 +8448,9 @@ int main(int argc, char** argv) {
 
   perform_dry_run(use_argv);
 
+  //通过cull_queue对queue进行精选，减小input的量
   cull_queue();
-
+  //展示初始状态
   show_init_stats();
 
   seek_to = find_start_position();
@@ -8459,7 +8495,7 @@ int main(int argc, char** argv) {
       }
 
       /* If we had a full queue cycle with no new finds, try
-         recombination strategies next. */
+         recombination strategies next.如果一整个队列循环都没新发现，尝试重组策略 */
 
       if (queued_paths == prev_queued) {
 
