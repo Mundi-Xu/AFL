@@ -309,6 +309,12 @@ static void edit_params(u32 argc, char** argv) {
 
 
 /* Main entry point */
+/* 
+寻找obj_path路径
+编辑参数cc_params
+替换进程空间，执行要调用的clang和为其传递参数
+execvp(cc_params[0], (char**)cc_params); 
+*/
 
 int main(int argc, char** argv) {
 

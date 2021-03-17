@@ -93,6 +93,8 @@ static u8   use_64bit = 0;
    is always the last parameter passed by GCC, so we exploit this property
    to keep the code simple. */
 
+/* 检查并修改参数以传递给as。请注意，文件名始终是GCC传递的最后一个参数，因此我们利用这个特性使代码保持简单。 */
+
 static void edit_params(int argc, char** argv) {
 
   u8 *tmp_dir = getenv("TMPDIR"), *afl_as = getenv("AFL_AS");
@@ -223,6 +225,15 @@ wrap_things_up:
 
 /* Process input file, generate modified_file. Insert instrumentation in all
    the appropriate places. */
+
+/* 处理输入文件，生成modified_file，将instrumentation插入所有适当的位置。 */
+/* 
+如果input_file不为空，则尝试打开这个文件，如果打开失败就抛出异常，
+如果为空，则读取标准输入，最终获取FILE* 指针inf
+然后打开modified_file对应的临时文件，并获取其句柄outfd，再根据句柄通过fdopen函数拿到FILE*指针outf
+通过fgets从inf中逐行读取内容保存到line数组里，每行最多读取的字节数是MAX_LINE(8192),这个值包括’\0’,
+所以实际读取的有内容的字节数是MAX_LINE-1个字节。从line数组里将读取的内容写入到outf对应的文件里。
+*/
 
 static void add_instrumentation(void) {
 
@@ -473,6 +484,7 @@ static void add_instrumentation(void) {
 
 
 /* Main entry point */
+/* fork出一个子进程，让子进程来执行execvp(as_params[0], (char **) as_params); */
 
 int main(int argc, char** argv) {
 

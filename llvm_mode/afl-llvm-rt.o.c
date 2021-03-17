@@ -236,6 +236,13 @@ int __afl_persistent_loop(unsigned int max_cnt) {
 
 /* This one can be called from user code when deferred forkserver mode
     is enabled. */
+    
+/*
+deferred instrumentation
+AFL会尝试通过仅执行一次目标二进制文件来优化性能。
+它会暂停控制流，然后复制该“主”进程以持续提供fuzzer的目标。
+该功能在某些情况下可以减少操作系统、链接与libc内部执行程序的成本。
+*/
 
 void __afl_manual_init(void) {
 

@@ -69,6 +69,7 @@ namespace {
 
 char AFLCoverage::ID = 0;
 
+/* 通过getContext来获取LLVMContext，其保存了整个程序里分配的类型和常量信息。 */
 
 bool AFLCoverage::runOnModule(Module &M) {
 
@@ -176,6 +177,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
 }
 
+/* 向PassManager来注册新的pass，每个pass彼此独立，通过PM统一注册和调度，更加模块化。 */
 
 static void registerAFLPass(const PassManagerBuilder &,
                             legacy::PassManagerBase &PM) {

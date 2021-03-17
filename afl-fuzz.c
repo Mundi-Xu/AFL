@@ -407,7 +407,8 @@ static void shuffle_ptrs(void** ptrs, u32 cnt) {
 #ifdef HAVE_AFFINITY
 
 /* Build a list of processes bound to specific cores. Returns -1 if nothing
-   can be found. Assumes an upper bound of 4k CPUs. */
+   can be found. Assumes an upper bound of 4k CPUs. 
+   构建绑定到特定核心的进程列表。如果什么也找不到，返回-1。假设一个4k cpu的上限 */
 
 static void bind_to_free_cpu(void) {
 
@@ -742,7 +743,7 @@ static void mark_as_det_done(struct queue_entry* q) {
 
 
 /* Mark as variable. Create symlinks if possible to make it easier to examine
-   the files. */
+   the files. 标记为变量，创建符号链接使之更容易检查文件。*/
 
 static void mark_as_variable(struct queue_entry* q) {
 
@@ -769,6 +770,9 @@ static void mark_as_variable(struct queue_entry* q) {
 
 /* Mark / unmark as redundant (edge-only). This is not used for restoring state,
    but may be useful for post-processing datasets. */
+
+/* 标记/取消标记为冗余(仅限边缘)。这并不用于恢复状态，但对于后处理数据集可能有用。*/
+// 将非favored标记为冗余。
 
 static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
@@ -800,6 +804,15 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 
 /* Append new test case to the queue. */
+
+/*
+queue_entry是一个链表数据结构
+先通过calloc动态分配一个queue_entry结构体，并初始化其fname为文件名fn，
+len为文件大小，depth为cur_depth + 1,passed_det为传递进来的passed_det
+如果q->depth > max_depth，则设置max_depth为q->depth
+如果queue_top不为空，则设置queue_top->next为q，queue_top = q;，
+否则q_prev100 = queue = queue_top = q;
+*/
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
@@ -902,7 +915,18 @@ EXP_ST void read_bitmap(u8* fname) {
    Updates the map, so subsequent calls will always return 0.
 
    This function is called after every exec() on a fairly large buffer, so
-   it needs to be fast. We do this in 32-bit and 64-bit flavors. */
+   it needs to be fast. We do this in 32-bit and 64-bit flavors.
+   
+   检查当前执行路径是否为表带来了新内容。更新原始位以反映发现。
+   如果唯一更改的是特定元组的命中计数，则返回1;如果有新的元组出现，则返回2。
+   更新映射，因此后续调用将始终返回0。这个函数是在相当大的缓冲区上的每个exec()之后调用的，
+   因此它需要非常快。我们以32位和64位的方式做这件事。
+*/
+
+/*
+has_new_bits() 新bit发现函数  ,has_new_bits():检查本次执行得到的path是否产生新的tuple。
+返回0，没有新的tuple；返回1，tuple的访问次数变化；返回2，发现新的tuple； 
+*/
 
 static inline u8 has_new_bits(u8* virgin_map) {
 
@@ -928,7 +952,10 @@ static inline u8 has_new_bits(u8* virgin_map) {
 
     /* Optimize for (*current & *virgin) == 0 - i.e., no bits in current bitmap
        that have not been already cleared from the virgin map - since this will
-       almost always be the case. */
+       almost always be the case. 
+       
+       优化为(*current & *virgin) == 0 -即，当前位图中没有位尚未从原始图中清除—因为几乎总是这样
+       */
 
     if (unlikely(*current) && unlikely(*current & *virgin)) {
 
@@ -1262,13 +1289,39 @@ static void minimize_bits(u8* dst, u8* src) {
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
 
+/*
+  当我们遇到一条新路径时，我们将其称为“有利路径”，以查看该路径是否比任何现有路径更“有利”。
+   “favorables”的目的是拥有一组最小的路径集来触发到目前为止在位图中看到的所有位，并专注于fuzz这些，而牺牲了其余的。
+
+   这个过程的第一步是为位图中的每个字节维护一个top_rating[]条目列表。
+   1.如果之前没有能触发这条新路径的竞争者 2.竞争者有更有利的速度x大小因子，就会赢得这个位置。
+*/
+
+/* 2
+   update_bitmap_socre()函数在每次run_target()之后调用，根据上述规则更新top_rate[].
+   如果一个queue入选top_rate[]，被替换掉queue的tc_ref–, 新queue的tc_ref++，并生成简化的trace_mini。
+   如果有发生新的queue入选top_rate[],score_changed置一，在cull_queue()时，会先判断score_changed是否为1，
+   如果不为1，就不用进行cull_queue()了。
+
+   trace_mini的组织方式：trace_mini的大小为MAP_SIZE / 8，即每个bit对应了bit_map中的一个byte；
+   如果这个queue访问了bit_map中的一个byte(即访问了一个edge)，trace_mini中对应的bit位就置一。
+*/
+
 static void update_bitmap_score(struct queue_entry* q) {
+
+/*首先，针对每个变迁-byte，AFL会寻找产生这个变迁的一个最佳种子，或者称为队列入口top_rate[]。
+  所谓最佳，是指该入口的执行时间*种子长度最短。对于MAX_SIZE=64KB的共享内存，
+  AFL使用top_rated[MAX_SIZE]来记录每一个变迁的最佳种子。
+  每当一个种子可以产生新路径，AFL就会更新top_rated，做法如下：
+  在给入口可以覆盖的变迁内，不妨设ID为i，比较现在种子的执行时间*种子长度是否小于原来的top_rated[i]，如果小，则更新之。*/
 
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
+
+/* 对于trace_bits[]中的每个字节集，与当前的比较。*/
 
   for (i = 0; i < MAP_SIZE; i++)
 
@@ -1313,6 +1366,12 @@ static void update_bitmap_score(struct queue_entry* q) {
    until the next run. The favored entries are given more air time during
    all fuzzing steps. */
 
+/* 
+精简队列
+上面第二个被讨论的机制是：检查toprated[]类目，以此前未见过的byte依次争夺优胜者，然后把他们标记为favored在下次开始跑之前。
+根据top_rated设置queue中的favored标志。在fuzz的过程中favored 条目将会给与更多的时间。
+*/
+
 static void cull_queue(void) {
 
   struct queue_entry* q;
@@ -1337,7 +1396,11 @@ static void cull_queue(void) {
 
   /* Let's see if anything in the bitmap isn't captured in temp_v.
      If yes, and if it has a top_rated[] contender, let's use it. */
-
+     
+  /*
+  让我们看看在temp_v中是否没有捕获位图中的任何内容。
+  如果是，并且它有一个top_rating[]竞争者，让我们使用它。
+  */
   for (i = 0; i < MAP_SIZE; i++)
     if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
 
@@ -1367,6 +1430,15 @@ static void cull_queue(void) {
 
 
 /* Configure shared memory and virgin_bits. This is called at startup. */
+
+/* 配置共享内存和virgin_bits */
+
+/*
+如果in_bitmap为空，则通过memset初始化数组virgin_bits[MAP_SIZE]的每个元素的值为’255’(\xff)
+通过memset设置virgin_tmout[MAP_SIZE]和virgin_crash[MAP_SIZE]的每个元素的值为’255’(\xff)
+调用shmget分配一块共享内存，shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);,
+将返回的共享内存标识符保存到shm_id里。
+*/
 
 EXP_ST void setup_shm(void) {
 
@@ -1430,6 +1502,29 @@ static void setup_post(void) {
 
 /* Read all testcases from the input directory, then queue them for testing.
    Called at startup. */
+
+/*
+从输入文件夹中读取所有文件，然后将它们排队进行测试。
+
+尝试访问in_dir/queue文件夹，如果存在就重新设置in_dir为in_dir/queue
+Auto-detect non-in-place resumption attempts.
+扫描in_dir，并将结果保存在struct dirent **nl里
+不使用readdir,因为测试用例的顺序将随机地有些变化,并且将难以控制。
+遍历nl,nl[i]->d_name的值为input文件夹下的文件名字符串
+u8 *fn = alloc_printf("%s/%s", in_dir, nl[i]->d_name);
+u8 *dfn = alloc_printf("%s/.state/deterministic_done/%s", in_dir, nl[i]->d_name);
+如果shuffle_queue的值为真，且nl_cnt大于1，则shuffle_ptrs((void **) nl, nl_cnt)，字面意思上就是重排nl里的指针的位置。
+通过文件属性过滤掉.和..这样的regular文件，并检查文件大小，如果文件大小大于MAX_FILE，默认是1024*1024字节，即1M
+通过access检查in_dir/.state/deterministic_done/nl[i]->d_name是否存在，这应该是为了用在resume恢复扫描使用
+如果存在就设置passed_det为1
+这个检查是用来判断是否这个entry已完成deterministic fuzzing。在恢复异常终止的扫描时，
+我们不想重复deterministic fuzzing，因为这将毫无意义，而且可能非常耗时
+add_to_queue(fn, st.st_size, passed_det);
+如果queued_paths为0，则代表输入文件夹为0，抛出异常
+设置last_path_time为0
+queued_at_start的值设置为queued_paths
+Total number of initial inputs
+*/
 
 static void read_testcases(void) {
 
@@ -1688,6 +1783,8 @@ static void load_extras_file(u8* fname, u32* min_len, u32* max_len,
 
 /* Read extras from the extras directory and sort them by size. */
 
+/* 如果定义了extras_dir，则从extras_dir读取extras到extras数组里，并按size排序。 */
+
 static void load_extras(u8* dir) {
 
   DIR* d;
@@ -1800,6 +1897,20 @@ static inline u8 memcmp_nocase(u8* m1, u8* m2, u32 len) {
 
 /* Maybe add automatic extra. */
 
+/*
+如果用户设置了MAX_AUTO_EXTRAS或者USE_AUTO_EXTRAS为0，则直接返回。
+循环遍历i从1到len，将tmp[0]和mem[i]异或，如果相同，则结束循环。
+如果结束时i=0，即tmp[0]和tmp[1]就相同，就直接返回。这里我推断tmp应该是从小到大排序的字节流。
+如果len的长度为2，就和interesting_16数组里的元素比较，如果和其中某一个相同，就直接return。
+如果len的长度为4，就和interesting_32数组里的元素比较，如果和其中某一个相同，就直接return。
+将tmp和现有的extras数组里的元素比较，利用extras数组里保存的元素是按照size大小，从小到大排序这个特性，来优化代码。
+遍历extras数组，比较memcmp_nocase(extras[i].data, mem, len),如果有一个相同，就直接return。
+static struct extra_data extras; / Extra tokens to fuzz with 
+设置auto_changed为1
+遍历a_extras数组，比较memcmp_nocase(a_extras[i].data, mem, len),
+如果相同，就将其hit_cnt值加一，这是代表在语料中被use的次数,然后跳转到sort_a_extras
+*/
+
 static void maybe_add_auto(u8* mem, u32 len) {
 
   u32 i;
@@ -1865,7 +1976,8 @@ static void maybe_add_auto(u8* mem, u32 len) {
 
   /* At this point, looks like we're dealing with a new entry. So, let's
      append it if we have room. Otherwise, let's randomly evict some other
-     entry from the bottom half of the list. */
+     entry from the bottom half of the list.在这一点，看起来我们在处理一个新的元素。
+     如果有空间的话，我们把它加起来。否则，让我们从列表的下半部分随机删除一些其他条目。 */
 
   if (a_extras_cnt < MAX_AUTO_EXTRAS) {
 
@@ -1934,6 +2046,17 @@ static void save_auto(void) {
 
 /* Load automatically generated extras. */
 
+/*
+load自动生成的提取出来的词典token
+
+遍历循环从i等于0到USE_AUTO_EXTRAS，默认50
+以只读模式尝试打开文件名为alloc_printf("%s/.state/auto_extras/auto_%06u", in_dir, i)的文件
+如果打开失败，则结束
+如果打开成功，则从fd读取最多MAX_AUTO_EXTRA+1个字节到tmp数组里，
+默认MAX_AUTO_EXTRA为32，这是单个auto extra文件的最大大小，读取出的长度保存到len里。
+maybe_add_auto(tmp, len);
+*/
+
 static void load_auto(void) {
 
   u32 i;
@@ -1955,7 +2078,8 @@ static void load_auto(void) {
     }
 
     /* We read one byte more to cheaply detect tokens that are too
-       long (and skip them). */
+       long (and skip them).
+       我们多读取一个字节，以便更容易地检测太长的令牌(并跳过它们) */
 
     len = read(fd, tmp, MAX_AUTO_EXTRA + 1);
 
@@ -2285,10 +2409,17 @@ EXP_ST void init_forkserver(char** argv) {
 
 
 /* Execute target application, monitoring for timeouts. Return status
-   information. The called program will update trace_bits[]. */
+   information. The called program will update trace_bits[]. 
+执行目标应用程序，监控超时。返回状态信息。被调用的程序将更新trace_bits[]
+*/
 
 static u8 run_target(char** argv, u32 timeout) {
-
+  /*
+  一个需要特别提的操作是 forkserver 上线，由 init_forkserver 函数来完成，
+  也就是运行 afl-as.h 文件 main_payload 中维护 forkserver 的分支，
+  这样一来 run_target 函数只需关注和 forkserver 的交互即可，
+  而不必每次都重新创建一个目标进程
+  */
   static struct itimerval it;
   static u32 prev_timed_out = 0;
   static u64 exec_ms = 0;
@@ -2300,7 +2431,8 @@ static u8 run_target(char** argv, u32 timeout) {
 
   /* After this memset, trace_bits[] are effectively volatile, so we
      must prevent any earlier operations from venturing into that
-     territory. */
+     territory. 
+     在这个memset之后，trace_bits[]实际上是易失性的，因此我们必须防止任何早期操作进入该领域。*/
 
   memset(trace_bits, 0, MAP_SIZE);
   MEM_BARRIER();
@@ -2308,7 +2440,10 @@ static u8 run_target(char** argv, u32 timeout) {
   /* If we're running in "dumb" mode, we can't rely on the fork server
      logic compiled into the target program, so we will just keep calling
      execve(). There is a bit of code duplication between here and 
-     init_forkserver(), but c'est la vie. */
+     init_forkserver(), but c'est la vie. 
+     如果我们在“哑”模式下运行，就不能依赖于编译到目标程序中的fork服务器逻辑，
+     因此我们将继续调用execve()。
+     这里和init_forkserver()之间有一些代码重复，但这就是生活。*/
 
   if (dumb_mode == 1 || no_forkserver) {
 
@@ -2326,6 +2461,9 @@ static u8 run_target(char** argv, u32 timeout) {
 
 #ifdef RLIMIT_AS
 
+        /*RLIMIT_AS //进程的最大虚内存空间，字节为单位。 
+        RLIMIT_CORE //内核转存文件的最大长度。 
+        RLIMIT_CPU //最大允许的CPU使用时间，秒为单位。*/
         setrlimit(RLIMIT_AS, &r); /* Ignore errors */
 
 #else
@@ -2341,7 +2479,8 @@ static u8 run_target(char** argv, u32 timeout) {
       setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
 
       /* Isolate the process and configure standard descriptors. If out_file is
-         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
+         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. 
+         隔离流程并配置标准描述符。如果指定out_file，则stdin为/dev/null;否则，将克隆out_fd。*/
 
       setsid();
 
@@ -2392,8 +2531,10 @@ static u8 run_target(char** argv, u32 timeout) {
     s32 res;
 
     /* In non-dumb mode, we have the fork server up and running, so simply
-       tell it to have at it, and then read back PID. */
+       tell it to have at it, and then read back PID. 
+       在非哑模式下，我们已经启动并运行了fork服务器，因此只需告诉它打开它，然后读取PID。*/
 
+//其中，fsrv_ctl_fd 管道用于写，fsrv_st_fd 管道用来读
     if ((res = write(fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {
 
       if (stop_soon) return 0;
@@ -2413,6 +2554,7 @@ static u8 run_target(char** argv, u32 timeout) {
   }
 
   /* Configure timeout, as requested by user, then wait for child to terminate. */
+// 根据用户要求配置timeout，然后等待子进程终止。
 
   it.it_value.tv_sec = (timeout / 1000);
   it.it_value.tv_usec = (timeout % 1000) * 1000;
@@ -2420,6 +2562,7 @@ static u8 run_target(char** argv, u32 timeout) {
   setitimer(ITIMER_REAL, &it, NULL);
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
+// SIGALRM处理程序简单地杀死child_pid并设置child_timed_out。
 
   if (dumb_mode == 1 || no_forkserver) {
 
@@ -2453,7 +2596,9 @@ static u8 run_target(char** argv, u32 timeout) {
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
-     very normally and do not have to be treated as volatile. */
+     very normally and do not have to be treated as volatile. 
+     对于trace_bits的任何后续操作，编译器都不能在这一点以下移动。经过这个位置后，
+     trace_bits[]的行为非常正常，不需要作为volatile处理。*/
 
   MEM_BARRIER();
 
@@ -2480,7 +2625,9 @@ static u8 run_target(char** argv, u32 timeout) {
   }
 
   /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
-     must use a special exit code. */
+     must use a special exit code. 
+    对于MSAN来说，这是一个有点糟糕的攻击，它不支持abort_on_error，必须使用特殊的退出代码。
+    */
 
   if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
     kill_signal = 0;
@@ -2504,6 +2651,9 @@ static u8 run_target(char** argv, u32 timeout) {
 /* Write modified data to file for testing. If out_file is set, the old file
    is unlinked and a new one is created. Otherwise, out_fd is rewound and
    truncated. */
+/*
+将修改后的数据写入文件进行测试,如果out_file设置了，旧文件未被链接，新文件创建了，
+*/
 
 static void write_to_testcase(void* mem, u32 len) {
 
@@ -2533,6 +2683,7 @@ static void write_to_testcase(void* mem, u32 len) {
 
 /* The same, but with an adjustable gap. Used for trimming. */
 
+//具体修剪的函数
 static void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 
   s32 fd = out_fd;
@@ -2568,6 +2719,17 @@ static void show_stats(void);
    to warn about flaky or otherwise problematic test cases early on; and when
    new paths are discovered to detect variable behavior and so on. */
 
+/*
+   校准一个新的测试用例。这是在处理输入目录时完成的，
+   以便在早期就警告有问题的测试用例;当发现新的路径来检测变量行为等等。
+  calibratecase参数：
+  1.命令行传参argv
+  2.队列结构体指针q
+  3.内存（读取的testcase到内存）
+  4.u32 handicap
+  5.u8 from_queue
+*/
+
 static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
                          u32 handicap, u8 from_queue) {
 
@@ -2584,7 +2746,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   /* Be a bit more generous about timeouts when resuming sessions, or when
      trying to calibrate already-added finds. This helps avoid trouble due
-     to intermittent latency. */
+     to intermittent latency.
+     在恢复会话或尝试校准已经添加的发现时，对超时要更慷慨一些。这有助于避免间歇性延迟带来的麻烦。 */
 
   if (!from_queue || resuming_fuzz)
     use_tmout = MAX(exec_tmout + CAL_TMOUT_ADD,
@@ -2596,7 +2759,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   stage_max  = fast_cal ? 3 : CAL_CYCLES;
 
   /* Make sure the forkserver is up before we do anything, and let's not
-     count its spin-up time toward binary calibration. */
+     count its spin-up time toward binary calibration.
+     在我们做任何事情之前，请确保forkserver已经启动，
+     并且在进行二进制校准时，我们不要计算它的启动时间。 */
 
   if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
     init_forkserver(argv);
@@ -2617,6 +2782,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     if (!first_run && !(stage_cur % stats_update_freq)) show_stats();
 
+    //将testcase写到文件中去
     write_to_testcase(use_mem, q->len);
 
     fault = run_target(argv, use_tmout);
@@ -2632,9 +2798,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     }
 
     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-
+//如果校验和不相同说明出现新的情况了
     if (q->exec_cksum != cksum) {
-
+//has_new_bits 这个函数用来发现新的bitmap是哪种情况
       hnb = has_new_bits(virgin_bits);
       if (hnb > new_bits) new_bits = hnb;
 
@@ -2672,7 +2838,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   total_cal_cycles += stage_max;
 
   /* OK, let's collect some stats about the performance of this test case.
-     This is used for fuzzing air time calculations in calculate_score(). */
+     This is used for fuzzing air time calculations in calculate_score(). 
+     好的，让我们收集一些关于这个测试用例性能的统计数据。
+     这用于在calculate_score()中fuzz的空余时间计算。*/
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
@@ -2686,7 +2854,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   /* If this case didn't result in new output from the instrumentation, tell
      parent. This is a non-critical problem, but something to warn the user
-     about. */
+     about.如果这种情况没有从检测中得到新的输出，请告诉父程序。
+     这是一个无关紧要的问题，但是需要提醒用户注意。 */
 
   if (!dumb_mode && first_run && !fault && !new_bits) fault = FAULT_NOBITS;
 
@@ -2739,6 +2908,47 @@ static void check_map_coverage(void) {
 
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
+
+/*
+读取环境变量AFL_SKIP_CRASHES到skip_crashes，设置cal_failures为0
+遍历queue
+打开q->fname，并读取到分配的内存use_mem里
+
+res = calibrate_case(argv, q, use_mem, 0, 1);
+校准测试用例，见下文
+如果stop_soon被置为1，就直接return
+如果res的结果为crash_mode或者FAULT_NOBITS
+打印SAYF("len = %u, map size = %u, exec speed = %llu us\n", q->len, q->bitmap_size, q->exec_us);
+依据res的结果查看是哪种错误并进行判断。一共有以下几种错误类型
+
+FAULT_NONE
+如果q是头结点，即第一个测试用例，则check_map_coverage，用以评估map coverage
+计数trace_bits发现的路径数，如果小于100，就直接返回
+在trace_bits的数组后半段，如果有值就直接返回。
+抛出警告WARNF("Recompile binary with newer version of afl to improve coverage!")
+如果是crash_mode，则抛出异常，FATAL("Test case '%s' does *NOT* crash", fn);，该文件不崩溃
+
+FAULT_TMOUT
+如果指定了-t参数，则timeout_given值为2
+抛出警告WARNF("Test case results in a timeout (skipping)");，
+并设置q的cal_failed为CAL_CHANCES，cal_failures计数器加一。
+
+FAULT_CRASH
+如果没有指定mem_limit，则可能抛出建议增加内存的建议
+但不管指定了还是没有，都会抛出异常FATAL("Test case '%s' results in a crash", fn);
+
+FAULT_ERROR
+抛出异常Unable to execute target application
+
+FAULT_NOINST
+这个样例运行没有出现任何路径信息，抛出异常No instrumentation detected
+
+FAULT_NOBITS
+如果这个样例有出现路径信息，但是没有任何新路径，抛出警告WARNF("No new instrumentation output, test case may be useless.")，认为这是无用路径。useless_at_start计数器加一
+如果这个样例q的var_behavior为真，则代表它多次运行，同样的输入条件下，却出现不同的覆盖信息。
+抛出警告WARNF("Instrumentation output varies across runs.");，代表这个样例的路径输出可变
+然后读取下一个queue，继续测试，直到结束。
+*/
 
 static void perform_dry_run(char** argv) {
 
@@ -2975,7 +3185,9 @@ static void link_or_copy(u8* old_path, u8* new_path) {
 static void nuke_resume_dir(void);
 
 /* Create hard links for input test cases in the output directory, choosing
-   good names and pivoting accordingly. */
+   good names and pivoting accordingly.
+   在输出目录中为输入测试用例创建硬链接，选择好名称并相应地旋转。
+   */
 
 static void pivot_inputs(void) {
 
@@ -3159,6 +3371,8 @@ static void write_crash_readme(void) {
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
+/*save_if_interesting() 判断是否为感兴趣的输入,判断一个文件是否是感兴趣的输入(has_new_bits)，
+   即是否访问了新的tuple或者tuple访问次数发生变化，如果是则保存输入文件（放到队列queue中）*/
 
 static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
@@ -3345,8 +3559,11 @@ keep_as_crash:
 }
 
 
-/* When resuming, try to find the queue position to start from. This makes sense
-   only when resuming, and when we can find the original fuzzer_stats. */
+/* 
+When resuming, try to find the queue position to start from. This makes sense
+only when resuming, and when we can find the original fuzzer_stats. 
+在恢复时，尝试找到要开始的队列位置。只有在恢复时，以及在可以找到原始fuzzer_stats时，这才有意义。
+*/
 
 static u32 find_start_position(void) {
 
@@ -3382,6 +3599,21 @@ static u32 find_start_position(void) {
 /* The same, but for timeouts. The idea is that when resuming sessions without
    -t given, we don't want to keep auto-scaling the timeout over and over
    again to prevent it from growing due to random flukes. */
+
+/*
+如果timeout_given没有被设置，则进入find_timeout
+这个想法是，在不指定-t的情况下resuming sessions时，
+我们不希望一遍又一遍地自动调整超时时间，以防止超时值因随机波动而增长
+
+如果resuming_fuzz为0，则直接return
+如果in_place_resume为1，则fn = alloc_printf("%s/fuzzer_stats", out_dir);，
+否则fn = alloc_printf("%s/../fuzzer_stats", in_dir);
+以只读方式打开fd，读取内容到tmp[4096]里，并在里面搜索exec_timeout :
+如果搜索不到就直接返回，如果搜索到了，就读取这个timeout的数值，如果大于4就设置为exec_tmout的值。
+EXP_ST u32 exec_tmout = EXEC_TIMEOUT; / Configurable exec timeout (ms) /
+timeout_given = 3;
+timeout_given, / Specific timeout given? /
+*/
 
 static void find_timeout(void) {
 
@@ -3928,7 +4160,9 @@ static void check_term_size(void);
 
 
 /* A spiffy retro stats screen! This is called every stats_update_freq
-   execve() calls, plus in several other circumstances. */
+   execve() calls, plus in several other circumstances. 
+   一个漂亮的复古统计屏幕!这在每个stats_update_freq execve()调用中都会被调用，在其他一些情况下也会被调用。
+   */
 
 static void show_stats(void) {
 
@@ -4401,7 +4635,11 @@ static void show_stats(void) {
 
 /* Display quick statistics at the end of processing the input directory,
    plus a bunch of warnings. Some calibration stuff also ended up here,
-   along with several hardcoded constants. Maybe clean up eventually. */
+   along with several hardcoded constants. Maybe clean up eventually.
+   在处理输入目录的末尾显示快速统计信息，并添加一系列警告。
+   一些校准的东西也在这里结束了，还有一些硬编码的常量。也许最终会清理干净。
+   */
+
 
 static void show_init_stats(void) {
 
@@ -4521,7 +4759,11 @@ static u32 next_p2(u32 val) {
 
 /* Trim all new test cases to save cycles when doing deterministic checks. The
    trimmer uses power-of-two increments somewhere between 1/16 and 1/1024 of
-   file size, to keep the stage short and sweet. */
+   file size, to keep the stage short and sweet. 
+   在进行确定性检查时，修剪所有新的测试用例以节省周期。
+   修剪器使用文件大小的1/16到1/1024之间的2次方增量，以保持该阶段又快又好。
+   */
+
 
 static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
@@ -4535,7 +4777,9 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
   /* Although the trimmer will be less useful when variable behavior is
      detected, it will still work to some extent, so we don't check for
-     this. */
+     this. 
+   虽然当检测到可变行为时，微调器的作用会降低，但它在某种程度上仍然可以工作，所以我们不检查这个。
+     */
 
   if (q->len < 5) return 0;
 
@@ -4549,7 +4793,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
   remove_len = MAX(len_p2 / TRIM_START_STEPS, TRIM_MIN_BYTES);
 
   /* Continue until the number of steps gets too high or the stepover
-     gets too small. */
+     gets too small. 继续执行，直到步骤数太高或步进器太小为止。*/
 
   while (remove_len >= MAX(len_p2 / TRIM_END_STEPS, TRIM_MIN_BYTES)) {
 
@@ -4579,7 +4823,10 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
       /* If the deletion had no impact on the trace, make it permanent. This
          isn't perfect for variable-path inputs, but we're just making a
          best-effort pass, so it's not a big deal if we end up with false
-         negatives every now and then. */
+         negatives every now and then.
+         如果删除对跟踪没有影响，则使其永久。这对于可变路径的输入并不完美，
+         但我们只是尽了最大的努力通过，所以如果我们时不时地以假阴性告终，也没什么大不了的。
+         */
 
       if (cksum == q->exec_cksum) {
 
@@ -4645,7 +4892,11 @@ abort_trimming:
 
 /* Write a modified test case, run program, process results. Handle
    error conditions, returning 1 if it's time to bail out. This is
-   a helper function for fuzz_one(). */
+   a helper function for fuzz_one(). 
+   编写修改后的测试用例，运行程序，处理结果。处理错误条件，如果需要退出，返回1。这是fuzz_one()的一个辅助函数*/
+
+/*common_fuzz_stuff() 变异后执行的fuzz函数 将out_buf中的变异内容输出到文件(write_to_testcase)，
+并执行(run_target)，并判断这个变异是否为一个感兴趣的变异(save_if_interesting)*/
 
 EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
@@ -4674,7 +4925,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
   } else subseq_tmouts = 0;
 
   /* Users can hit us with SIGUSR1 to request the current input
-     to be abandoned. */
+     to be abandoned. 用户可以使用SIGUSR1请求放弃当前输入*/
 
   if (skip_requested) {
 
@@ -4684,7 +4935,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   }
 
-  /* This handles FAULT_ERROR for us: */
+  /* This handles FAULT_ERROR for us: 处理错误*/
 
   queued_discovered += save_if_interesting(argv, out_buf, len, fault);
 
@@ -4741,7 +4992,12 @@ static u32 choose_block_len(u32 limit) {
 
 /* Calculate case desirability score to adjust the length of havoc fuzzing.
    A helper function for fuzz_one(). Maybe some of these constants should
-   go into config.h. */
+   go into config.h. 
+   计算testcase的可取性评分，以调整破坏模糊的长度。fuzz_one()的辅助函数。也许有些常数应该放到config.h中
+   */
+
+/*根据case的执行速度/bitmap的大小/case产生时间/路径深度等因素给case进行打分,返回值为一个分数，用来调整在havoc阶段的用时。
+使得执行时间短，代码覆盖高，新发现的，路径深度深的case拥有更多havoc变异的机会。*/  
 
 static u32 calculate_score(struct queue_entry* q) {
 
@@ -4751,7 +5007,10 @@ static u32 calculate_score(struct queue_entry* q) {
 
   /* Adjust score based on execution speed of this path, compared to the
      global average. Multiplier ranges from 0.1x to 3x. Fast inputs are
-     less expensive to fuzz, so we're giving them more air time. */
+     less expensive to fuzz, so we're giving them more air time.
+	 根据该路径的执行速度调整分数，并与全局平均速度进行比较。乘数的范围从0.1x到3x。快速输入的fuzz成本更低，
+	 所以我们给了它们更多的富裕时间。
+     */
 
   if (q->exec_us * 0.1 > avg_exec_us) perf_score = 10;
   else if (q->exec_us * 0.25 > avg_exec_us) perf_score = 25;
@@ -4762,7 +5021,9 @@ static u32 calculate_score(struct queue_entry* q) {
   else if (q->exec_us * 2 < avg_exec_us) perf_score = 150;
 
   /* Adjust score based on bitmap size. The working theory is that better
-     coverage translates to better targets. Multiplier from 0.25x to 3x. */
+     coverage translates to better targets. Multiplier from 0.25x to 3x.
+    根据位图大小调整分数。有效的理论是，更好的覆盖率意味着更好的目标。乘法器从0.25倍到3x。
+     */
 
   if (q->bitmap_size * 0.3 > avg_bitmap_size) perf_score *= 3;
   else if (q->bitmap_size * 0.5 > avg_bitmap_size) perf_score *= 2;
@@ -4773,7 +5034,10 @@ static u32 calculate_score(struct queue_entry* q) {
 
   /* Adjust score based on handicap. Handicap is proportional to how late
      in the game we learned about this path. Latecomers are allowed to run
-     for a bit longer until they catch up with the rest. */
+     for a bit longer until they catch up with the rest. 
+     根据障碍调整分数。障碍与我们学习这条路径的时间成正比。迟到的人可以多跑一会儿，直到赶上其他人为止。
+     怎么理解这个障碍？？？  后面循环的队列数量。
+     */
 
   if (q->handicap >= 4) {
 
@@ -4789,7 +5053,8 @@ static u32 calculate_score(struct queue_entry* q) {
 
   /* Final adjustment based on input depth, under the assumption that fuzzing
      deeper test cases is more likely to reveal stuff that can't be
-     discovered with traditional fuzzers. */
+     discovered with traditional fuzzers. 
+     基于输入深度的最终调整，假设更深入的测试用例更有可能揭示传统模糊器无法发现的东西。Path depth*/
 
   switch (q->depth) {
 
@@ -4998,7 +5263,9 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
 
 /* Take the current entry from the queue, fuzz it for a while. This
    function is a tad too long... returns 0 if fuzzed successfully, 1 if
-   skipped or bailed out. */
+   skipped or bailed out.
+   从队列中取出当前条目，模糊它。这个函数太长了…如果fuzzed成功，返回0;如果跳过或退出，返回1。
+   */
 
 static u8 fuzz_one(char** argv) {
 
@@ -5015,7 +5282,8 @@ static u8 fuzz_one(char** argv) {
 #ifdef IGNORE_FINDS
 
   /* In IGNORE_FINDS mode, skip any entries that weren't in the
-     initial data set. */
+     initial data set. 
+     在ignore_found模式下，跳过任何不在初始数据集中的条目。*/
 
   if (queue_cur->depth > 1) return 1;
 
@@ -5025,18 +5293,25 @@ static u8 fuzz_one(char** argv) {
 
     /* If we have any favored, non-fuzzed new arrivals in the queue,
        possibly skip to them at the expense of already-fuzzed or non-favored
-       cases. */
+       cases. 如果我们在队列中有任何受欢迎的、没被模糊过的新种子，可以跳到它们，略过已经fuzzed或非受欢迎的case。*/
 
     if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
         UR(100) < SKIP_TO_NEW_PROB) return 1;
+
+    /*假如pending_favored为真，那么判断下当前从队列中拿出来的这一项是否被fuzz过，或者不是favired的，
+		当这两个条件满足其中一项，就会随机一个0-100的数，假如随机到100才会继续下去（非常残酷啊）*/
 
   } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
 
     /* Otherwise, still possibly skip non-favored cases, albeit less often.
        The odds of skipping stuff are higher for already-fuzzed inputs and
-       lower for never-fuzzed entries. */
+       lower for never-fuzzed entries. 否则，仍有可能跳过不受欢迎的情况，尽管频率较低。
+       对于已经模糊化的输入，跳过某些内容的几率更高，而对于从未模糊化的输入，跳过某些内容的几率更低。  */
+    /*然后假如满足不是dumb模式，当前项不是favored，并且等待fuzz的有10项以上，就会进入else if的流程中*/
 
     if (queue_cycle > 1 && !queue_cur->was_fuzzed) {
+
+  //假如当前项没被fuzz过，就有75%的几率跳过，被fuzz过就有95%的几率跳过
 
       if (UR(100) < SKIP_NFAV_NEW_PROB) return 1;
 
@@ -5072,7 +5347,9 @@ static u8 fuzz_one(char** argv) {
 
   /* We could mmap() out_buf as MAP_PRIVATE, but we end up clobbering every
      single byte anyway, so it wouldn't give us any performance or memory usage
-     benefits. */
+     benefits. 
+     我们可以将mmap() out_buf作为MAP_PRIVATE，但无论如何我们最终都要对每个字节进行重击，
+     因此它不会给我们带来任何性能或内存使用方面的好处。*/
 
   out_buf = ck_alloc_nozero(len);
 
@@ -5083,7 +5360,7 @@ static u8 fuzz_one(char** argv) {
   /*******************************************
    * CALIBRATION (only if failed earlier on) *
    *******************************************/
-
+//假如当前项有校准错误，并且校准错误次数小于3次，那么就用calibrate_case进行测试
   if (queue_cur->cal_failed) {
 
     u8 res = FAULT_TMOUT;
@@ -5111,7 +5388,7 @@ static u8 fuzz_one(char** argv) {
   }
 
   /************
-   * TRIMMING *
+   * TRIMMING 修剪testcase大小*
    ************/
 
   if (!dumb_mode && !queue_cur->trim_done) {
@@ -5137,20 +5414,22 @@ static u8 fuzz_one(char** argv) {
   memcpy(out_buf, in_buf, len);
 
   /*********************
-   * PERFORMANCE SCORE *
+   * PERFORMANCE SCORE 这里是用calculate_score计算评分，然后下面是根据各种条件，然后直接跳到havoc那个变异阶段*
    *********************/
 
   orig_perf = perf_score = calculate_score(queue_cur);
 
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
      this entry ourselves (was_fuzzed), or if it has gone through deterministic
-     testing in earlier, resumed runs (passed_det). */
+     testing in earlier, resumed runs (passed_det). 
+     如果-d是给定的，如果没有足够频繁地选择它来保证昂贵的确定性阶段(fuzz_level)，
+     或者如果它在前面已经进行了确定性测试，则立即跳过，重新运行(passed_det)。*/
 
   if (skip_deterministic || queue_cur->was_fuzzed || queue_cur->passed_det)
     goto havoc_stage;
 
   /* Skip deterministic fuzzing if exec path checksum puts this out of scope
-     for this master instance. */
+     for this master instance. 如果exec路径校验和超出此主实例的范围，则跳过确定性模糊。*/
 
   if (master_max && (queue_cur->exec_cksum % master_max) != master_id - 1)
     goto havoc_stage;
@@ -6871,6 +7150,8 @@ static void handle_timeout(int sig) {
    isn't a shell script - a common and painful mistake. We also check for
    a valid ELF header and for evidence of AFL instrumentation. */
 
+/* check指定路径处要执行的程序是否存在，且它不能是一个shell script */
+
 EXP_ST void check_binary(u8* fname) {
 
   u8* env_path = 0;
@@ -7037,6 +7318,7 @@ EXP_ST void check_binary(u8* fname) {
 
 
 /* Trim and possibly create a banner for the run. */
+/* 修剪并且创建一个运行banner */
 
 static void fix_up_banner(u8* name) {
 
@@ -7067,6 +7349,13 @@ static void fix_up_banner(u8* name) {
 
 
 /* Check if we're on TTY. */
+
+/* 
+读取环境变量AFL_NO_UI的值，如果为真，则设置not_on_tty为1，并返回
+ioctl(1, TIOCGWINSZ, &ws)通过ioctl来读取window size，
+如果报错为ENOTTY，则代表当前不在一个tty终端运行，设置not_on_tty
+*/
+
 
 static void check_if_tty(void) {
 
@@ -7150,6 +7439,39 @@ static void usage(u8* argv0) {
 
 
 /* Prepare output directories and fds. */
+
+/*
+如果sync_id存在，且创建sync_dir文件夹，设置权限为0700（读写执行）
+如果报错，且errno不是EEXIST，则抛出异常。
+创建out_dir，设置权限为0700（读写执行）
+如果报错，且errno不是EEXIST，则抛出异常。
+maybe_delete_out_dir
+如果创建成功
+如果设置了in_place_resume，就抛出异常”Resume attempted but old output directory not found”
+out_dir_fd = open(out_dir, O_RDONLY)以只读模式打开这个文件，并返回文件句柄out_dir_fd
+如果没有定义宏__sun
+如果打开out_dir失败，或者为out_dir通过flock建立互斥锁定失败，就抛出异常”Unable to flock() output directory.”
+建立queue文件夹
+创建out_dir/queue文件夹，设��权限为0700
+创建out_dir/queue/.state/,设置权限为0700,该文件夹主要保存用于session resume和related tasks的queue metadata
+创建out_dir/queue/.state/deterministic_done/,设置权限为0700,该文件夹标记过去经历过deterministic fuzzing的queue entries。
+创建out_dir/queue/.state/auto_extras/,设置权限为0700,Directory with the auto-selected dictionary entries.
+创建out_dir/queue/.state/redundant_edges/,设置权限为0700,保存当前被认为是多余的路径集合
+创建out_dir/queue/.state/variable_behavior/,设置权限为0700,The set of paths showing variable behavior.
+如果sync_id存在
+创建out_dir/.synced/,设置权限为0700,同步文件夹，用于跟踪cooperating fuzzers.
+建立crashes文件夹
+创建out_dir/crashes文件夹，设置权限为0700,用于记录crashes
+建立hangs文件夹
+创建out_dir/hangs文件夹，设置权限为0700,用于记录hangs
+通常有用的文件描述符
+dev_null_fd = open("/dev/null", O_RDWR);以读写模式打开/dev/null
+dev_urandom_fd = open("/dev/urandom", O_RDONLY);,以只读模式打开/dev/urandom
+建立Gnuplot输出文件夹
+fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);以只写方式打开out_dir/plot_data文件，如果文件不存在，就创建，并获取句柄
+plot_file = fdopen(fd, "w");根据句柄得到FILE* plot_file
+向其中写入# unix_time, cycles_done, cur_path, paths_total, pending_total, pending_favs, map_size, unique_crashes, unique_hangs, max_depth, execs_per_sec\n
+*/
 
 EXP_ST void setup_dirs_fds(void) {
 
@@ -7273,6 +7595,11 @@ EXP_ST void setup_dirs_fds(void) {
 
 
 /* Setup the output file for fuzzed data, if not using -f. */
+
+/* 
+如果out_file为NULL，如果没有使用-f，就删除原本的out_dir/.cur_input，
+创建一个新的out_dir/.cur_input，保存其文件描述符在out_fd中
+*/
 
 EXP_ST void setup_stdio_file(void) {
 
@@ -7500,6 +7827,13 @@ static void get_core_count(void) {
 
 /* Validate and fix up out_dir and sync_dir when using -S. */
 
+/*
+如果通过-M或者-S指定了sync_id，则更新out_dir和sync_dir的值
+
+设置sync_dir的值为out_dir
+设置out_dir的值为out_dir/sync_id
+*/
+
 static void fix_up_sync(void) {
 
   u8* x = sync_id;
@@ -7548,6 +7882,7 @@ static void handle_resize(int sig) {
 
 
 /* Check ASAN options. */
+/* 读取环境变量ASAN_OPTIONS和MSAN_OPTIONS，做一些检查 */
 
 static void check_asan_opts(void) {
   u8* x = getenv("ASAN_OPTIONS");
@@ -7579,6 +7914,7 @@ static void check_asan_opts(void) {
 
 
 /* Detect @@ in args. */
+/* 识别参数里面有没有@@，如果有就替换为out_dir/.cur_input，如果没有就返回 */
 
 EXP_ST void detect_file_args(char** argv) {
 
@@ -7628,6 +7964,13 @@ EXP_ST void detect_file_args(char** argv) {
 /* Set up signal handlers. More complicated that needs to be, because libc on
    Solaris doesn't resume interrupted reads(), sets SA_RESETHAND when you call
    siginterrupt(), and does other unnecessary things. */
+/* 设置信号处理程序。 这需要更加复杂，
+因为Solaris上的libc不会恢复中断的reads()，
+而是在调用siginterrupt()时设置SA_RESETHAND，
+并执行其他不必要的操作。 
+*/
+
+/* 注册必要的信号处理函数 */
 
 EXP_ST void setup_signal_handlers(void) {
 
@@ -7744,6 +8087,7 @@ static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
 
 
 /* Make a copy of the current command line. */
+/* 拷贝当前的命令行参数 */
 
 static void save_cmdline(u32 argc, char** argv) {
 

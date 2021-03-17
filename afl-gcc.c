@@ -1,17 +1,13 @@
 /*
-  Copyright 2013 Google LLC All rights reserved.
+版权所有2013 Google LLC保留所有权利。
 
-  Licensed under the Apache License, Version 2.0 (the "License");
-  you may not use this file except in compliance with the License.
-  You may obtain a copy of the License at:
+根据Apache许可证2.0版（“许可证”）获得许可； 除非遵守许可，否则您不得使用此文件。 
+您可以在以下位置获得许可的副本：
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing, software
-  distributed under the License is distributed on an "AS IS" BASIS,
-  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  See the License for the specific language governing permissions and
-  limitations under the License.
+除非适用法律要求或以书面形式同意，否则根据“许可”分发的软件将按“原样”分发，没有任何形式的明示或暗示担保或条件。
+有关许可下特定的语言管理权限和限制，请参阅许可。
 */
 
 /*
@@ -20,22 +16,15 @@
 
    Written and maintained by Michal Zalewski <lcamtuf@google.com>
 
-   This program is a drop-in replacement for GCC or clang. The most common way
-   of using it is to pass the path to afl-gcc or afl-clang via CC when invoking
-   ./configure.
+该程序是GCC或clang的直接替代品。 
+最常见的使用方法是在调用./configure时通过CC将路径传递到afl-gcc或afl-clang。 
+（当然，对于C++代码，请使用CXX并将其指向afl-g++ / afl-clang++。）
+wrapper需要知道afl-as的路径（重命名为“as”）。缺省值为/usr/local/lib/afl/。 
+指定备用目录的简便方法是设置AFL_PATH。
 
-   (Of course, use CXX and point it to afl-g++ / afl-clang++ for C++ code.)
-
-   The wrapper needs to know the path to afl-as (renamed to 'as'). The default
-   is /usr/local/lib/afl/. A convenient way to specify alternative directories
-   would be to set AFL_PATH.
-
-   If AFL_HARDEN is set, the wrapper will compile the target app with various
-   hardening options that may help detect memory management issues more
-   reliably. You can also specify AFL_USE_ASAN to enable ASAN.
-
-   If you want to call a non-default compiler as a next step of the chain,
-   specify its location via AFL_CC or AFL_CXX.
+如果设置了AFL_HARDEN，则wrapper将使用各种强化选项来编译目标应用程序，这些选项可能有助于更可靠地检测内存管理问题。 
+您也可以指定AFL_USE_ASAN启用ASAN。
+如果要调用非默认编译器作为链的下一步，请通过AFL_CC或AFL_CXX指定其位置。
 
 */
 
@@ -60,6 +49,17 @@ static u8   be_quiet,               /* Quiet mode                        */
 
 /* Try to find our "fake" GNU assembler in AFL_PATH or at the location derived
    from argv[0]. If that fails, abort. */
+
+/*
+这个函数用来寻找afl-as的位置。
+它首先检查是否存在AFL_PATH这个环境变量，如果存在就赋值给afl_path，
+然后检查afl_path/as这个文件是否可以访问，如果可以访问，就将afl_path设置为as_path。
+如果不存在AFL_PATH这个环境变量，则检查argv0，
+例如（/Users/sakura/gitsource/AFL/cmake-build-debug/afl-gcc）中是否存在’/‘，
+如果有就找到最后一个’/‘所在的位置，并取其前面的字符串作为dir，
+然后检查dir/afl-as这个文件是否可以访问，如果可以访问，就将dir设置为as_path
+如果上述两种方式都失败，则抛出异常。
+*/
 
 static void find_as(u8* argv0) {
 
@@ -114,6 +114,7 @@ static void find_as(u8* argv0) {
 
 
 /* Copy argv to cc_params, making the necessary edits. */
+/* 这个函数主要是将argv拷贝到u8 **cc_params中，并做必要的编辑 */
 
 static void edit_params(u32 argc, char** argv) {
 
@@ -306,6 +307,10 @@ static void edit_params(u32 argc, char** argv) {
 
 
 /* Main entry point */
+/*
+afl-gcc实际上就是找到as所在的位置，将其加入搜索路径，然后设置必要的gcc参数和一些宏，
+然后调用gcc进行实际的编译，仅仅只是一层wrapper
+*/
 
 int main(int argc, char** argv) {
 
